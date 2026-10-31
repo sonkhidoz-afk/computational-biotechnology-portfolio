@@ -1,0 +1,82 @@
+# ==============================================================
+# 01_download_tcga.R
+# Project: Reproducible transcriptomic analysis of breast cancer
+# Contrast: PAM50 Basal-like vs Luminal A (TCGA-BRCA, primary tumours)
+# Output:   data/counts.rds (genes x samples raw counts)
+#           data/coldata.rds (sample labels)
+# ==============================================================
+
+# ---- 0. Install packages (run once) --------------------------
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install(c("TCGAbiolinks", "SummarizedExperiment"),
+                     update = FALSE, ask = FALSE)   # avoids the "Update all/some/none?" prompt
+if (!requireNamespace("data.table", quietly = TRUE)) install.packages("data.table")
+
+# ---- 1. Load packages ----------------------------------------
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(data.table)
+data.table::setDTthreads(1)   # lower memory use (helpful on 8 GB RAM)
+
+# ---- 2. Working folder ---------------------------------------
+# Must be the folder that contains (or will contain) GDCdata/
+# setwd("C:/path/to/your/project")
+getwd()
+dir.create("data", showWarnings = FALSE)
+
+# ---- 3. PAM50 labels and the two groups we need --------------
+subtypes <- TCGAquery_subtype("BRCA")
+table(subtypes$BRCA_Subtype_PAM50)   # sanity check
+
+keep <- subtypes[subtypes$BRCA_Subtype_PAM50 %in% c("Basal", "LumA"), ]
+
+# ---- 4. Query and download (STAR counts, primary tumour) -----
+query <- GDCquery(
+  project       = "TCGA-BRCA",
+  data.category = "Transcriptome Profiling",
+  data.type     = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts",
+  sample.type   = "Primary Tumor",
+  barcode       = keep$patient
+)
+GDCdownload(query)   # slow the first time; resumes/uses cache if rerun
+
+# ---- 5. Read raw counts file by file (low-memory route) ------
+# NOTE: GDCprepare(query) ran out of memory on 8 GB RAM, so we skip it.
+res <- getResults(query)
+res <- res[!duplicated(substr(res$cases, 1, 12)), ]   # one sample per patient
+
+files <- file.path("GDCdata", "TCGA-BRCA", "Transcriptome_Profiling",
+                   "Gene_Expression_Quantification", res$id, res$file_name)
+stopifnot(all(file.exists(files)))
+
+read_counts <- function(f) {
+  d <- fread(f, skip = 1, select = c(1, 2, 4))   # gene_id, gene_name, unstranded counts
+  d <- d[!grepl("^N_", gene_id)]                  # drop summary rows (N_unmapped, etc.)
+  d
+}
+
+first <- read_counts(files[1])
+genes <- first[, .(gene_id, gene_name)]
+counts <- matrix(NA_integer_, nrow = nrow(genes), ncol = length(files),
+                 dimnames = list(genes$gene_id, substr(res$cases, 1, 12)))
+
+for (i in seq_along(files)) {
+  d <- read_counts(files[i])
+  stopifnot(identical(d$gene_id, genes$gene_id))
+  counts[, i] <- d[[3]]
+}
+
+# ---- 6. Sample annotation ------------------------------------
+coldata <- keep[match(colnames(counts), keep$patient), ]
+
+dim(counts)
+table(coldata$BRCA_Subtype_PAM50)
+
+# ---- 7. Save so this step never needs repeating --------------
+saveRDS(counts,  "data/counts.rds")
+saveRDS(coldata, "data/coldata.rds")
+saveRDS(genes,   "data/genes.rds")
+
+# ---- 8. Record versions (paste into README) ------------------
+sessionInfo()
