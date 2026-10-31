@@ -78,5 +78,4 @@ saveRDS(counts,  "data/counts.rds")
 saveRDS(coldata, "data/coldata.rds")
 saveRDS(genes,   "data/genes.rds")
 
-# ---- 8. Record versions (paste into README) ------------------
-sessionInfo()
+
